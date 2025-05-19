@@ -416,6 +416,18 @@ class AF3Trainer(object):
             evaluated_pids = []
             total_batch_num = len(test_dl)
             for index, batch in enumerate(tqdm(test_dl)):
+                # ----> НАЧАЛО ИЗМЕНЕНИЯ <----
+                if isinstance(batch, list): # Добавьте эту проверку
+                    if len(batch) == 1:       # Убедитесь, что в списке один элемент (ожидаемо при batch_size=1)
+                        batch = batch[0]
+                    else:
+                        # Обработайте случай, если список пуст или содержит больше одного элемента,
+                        # если это возможно. Например, пропустить или вызвать ошибку.
+                        # В данном контексте, если batch_size=1 и collate_fn=lambda b: b,
+                        # список всегда должен содержать один элемент.
+                        self.print(f"Warning: batch in _evaluate is a list with unexpected length {len(batch)}. Skipping or erroring.")
+                        continue # или raise
+                # ----> КОНЕЦ ИЗМЕНЕНИЯ <----
                 batch = to_device(batch, self.device)
                 pid = batch["basic"]["pdb_id"]
 
