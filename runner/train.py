@@ -154,6 +154,25 @@ class AF3Trainer(object):
 
     def init_model(self):
         self.raw_model = Protenix(self.configs).to(self.device)
+
+        for i, param in enumerate(self.raw_model.parameters()):
+            param.requires_grad = False
+
+        if not hasattr(self.configs, 'unfreeze_layers_from'):
+            # Если ключа unfreeze_layers_from нет, размораживаем все слои
+            print ("unfreeze all diffusion model")
+            for i, param in enumerate(self.raw_model.diffusion_module.parameters()):
+                param.requires_grad = True
+        else:
+            # Если ключ unfreeze_layers_from есть, размораживаем слои, начиная с указанного индекса
+            unfreeze_from_index = self.configs.unfreeze_layers_from
+            print (f"unfreeze diffusion model layers from index {unfreeze_from_index}")
+            for i, param in enumerate(self.raw_model.diffusion_module.parameters()):
+                if i >= unfreeze_from_index:
+                    param.requires_grad = True
+                else:
+                    param.requires_grad = False
+                    
         self.use_ddp = False
         if DIST_WRAPPER.world_size > 1:
             self.print(f"Using DDP")
