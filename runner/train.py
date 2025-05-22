@@ -103,6 +103,33 @@ class AF3Trainer(object):
         self.init_loss()
         self.init_data()
         self.try_load_checkpoint()
+        if hasattr(configs, "apply_lora") and configs.apply_lora:
+            self.apply_lora()
+
+    def apply_lora(self):
+        for param in self.base_model.parameters():
+            param.requires_grad = False
+
+        target_modules_in_diffusion = get_target_module_names(self.model.diffusion_module)
+        final_target_modules = [f"diffusion_module.{name}" for name in target_modules_in_diffusion]
+
+        peft_config = LoraConfig(
+            r=8,                             # Ранг LoRA
+            lora_alpha=16,                   # Alpha для LoRA
+            target_modules=final_target_modules, # Передаем найденные и правильно именованные слои
+            lora_dropout=0.05,
+            bias="none",                     # "none", "all", "lora_only"
+            #task_type=TaskType.CAUSAL_LM     # Или другой тип задачи, если применимо.
+                                     # Если у вас не классическая задача NLP, можно опустить
+                                     # или использовать более общий тип, либо PEFT выберет его сам.
+                                     # Для произвольных моделей часто можно не указывать или использовать
+                                     # значение по умолчанию, если нет специфических требований.
+        )
+        self.base_model = self.model
+        self.model = get_peft_model(self.model, peft_config)
+        # Шаг 5: Проверяем обучаемые параметры
+        print("\nОбучаемые параметры после применения LoRA:")
+        self.model.print_trainable_parameters()
 
     def init_basics(self):
         # Step means effective step considering accumulation
@@ -200,29 +227,6 @@ class AF3Trainer(object):
     def init_model(self):
         self.base_model = Protenix(self.configs).to(self.device)
 
-        for param in self.base_model.parameters():
-            param.requires_grad = True
-
-        target_modules_in_diffusion = get_target_module_names(self.base_model.diffusion_module)
-        final_target_modules = [f"diffusion_module.{name}" for name in target_modules_in_diffusion]
-
-        peft_config = LoraConfig(
-            r=8,                             # Ранг LoRA
-            lora_alpha=16,                   # Alpha для LoRA
-            target_modules=final_target_modules, # Передаем найденные и правильно именованные слои
-            lora_dropout=0.05,
-            bias="none",                     # "none", "all", "lora_only"
-            #task_type=TaskType.CAUSAL_LM     # Или другой тип задачи, если применимо.
-                                     # Если у вас не классическая задача NLP, можно опустить
-                                     # или использовать более общий тип, либо PEFT выберет его сам.
-                                     # Для произвольных моделей часто можно не указывать или использовать
-                                     # значение по умолчанию, если нет специфических требований.
-        )
-        self.raw_model = get_peft_model(self.base_model, peft_config)
-        # Шаг 5: Проверяем обучаемые параметры
-        print("\nОбучаемые параметры после применения LoRA:")
-        self.raw_model.print_trainable_parameters()
-
         self.use_ddp = False
         if DIST_WRAPPER.world_size > 1:
             self.print(f"Using DDP")
@@ -273,15 +277,19 @@ class AF3Trainer(object):
         if DIST_WRAPPER.rank == 0:
             path = f"{self.checkpoint_dir}/{self.step}{ema_suffix}.pt"
             checkpoint = {
-                "model": self.model.state_dict(),
-                "optimizer": self.optimizer.state_dict(),
-                "scheduler": (
-                    self.lr_scheduler.state_dict()
-                    if self.lr_scheduler is not None
-                    else None
-                ),
-                "step": self.step,
-            }
+                    "optimizer": self.optimizer.state_dict(),
+                    "scheduler": (
+                        self.lr_scheduler.state_dict()
+                        if self.lr_scheduler is not None
+                        else None
+                    ),
+                    "step": self.step,
+                }
+            if hasattr(self.configs, "apply_lora") and self.configs.apply_lora:
+                checkpoint["model"] = self.model.merge_and_unload().state_dict()
+            else:
+                checkpoint["model"] = self.model.state_dict()
+                
             torch.save(checkpoint, path)
             self.print(f"Saved checkpoint to {path}")
 
