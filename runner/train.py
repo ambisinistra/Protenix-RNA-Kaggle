@@ -47,6 +47,51 @@ from runner.ema import EMAWrapper
 # Disable WANDB's console output capture to reduce unnecessary logging
 os.environ["WANDB_CONSOLE"] = "off"
 
+import torch.nn as nn
+from functools import partial
+
+from peft import LoraConfig, TaskType, get_peft_model
+
+# Предположим, что Attention - это ваш кастомный класс
+# Убедитесь, что этот импорт соответствует вашему проекту
+# Например, если Attention определен в protenix.model.modules.transformer
+try:
+    from protenix.model.modules.transformer import Attention
+except ImportError:
+    # Если Attention определен в том же файле, что вы показывали ранее:
+    # class Attention(nn.Module): ...
+    # pass # или определите его здесь для примера, если он не импортируется
+    print("Warning: Custom Attention class not found or defined. Target module identification for attention might be incomplete.")
+    class Attention(nn.Module): pass # Placeholder
+
+def get_target_module_names(model_module, parent_name=""):
+    """
+    Рекурсивно находит имена nn.Linear слоев и линейных слоев
+    внутри кастомных Attention модулей.
+    """
+    target_names = []
+    for name, child_module in model_module.named_children():
+        full_child_name = f"{parent_name}.{name}" if parent_name else name
+
+        if isinstance(child_module, nn.Linear): # Включая LinearNoBias, BiasInitLinear
+            target_names.append(full_child_name)
+        elif isinstance(child_module, Attention): # Ваш кастомный класс Attention
+            # Добавляем линейные слои внутри Attention
+            # (linear_q, linear_k, linear_v, linear_o, linear_g)
+            attention_linear_layers = ["linear_q", "linear_k", "linear_v", "linear_o"]
+            if child_module.gating: # или hasattr(child_module, 'linear_g') and child_module.linear_g is not None
+                attention_linear_layers.append("linear_g")
+
+            for sub_name in attention_linear_layers:
+                if hasattr(child_module, sub_name) and isinstance(getattr(child_module, sub_name), nn.Linear):
+                    target_names.append(f"{full_child_name}.{sub_name}")
+            # Рекурсивно ищем Attention внутри Attention (маловероятно, но для полноты)
+            target_names.extend(get_target_module_names(child_module, full_child_name))
+        else:
+            # Рекурсивно ищем в других дочерних модулях
+            target_names.extend(get_target_module_names(child_module, full_child_name))
+    return target_names
+
 
 class AF3Trainer(object):
     def __init__(self, configs):
@@ -153,7 +198,31 @@ class AF3Trainer(object):
         self.lddt_metrics = LDDTMetrics(self.configs)
 
     def init_model(self):
-        self.raw_model = Protenix(self.configs).to(self.device)
+        self.base_model = Protenix(self.configs).to(self.device)
+
+        for param in self.base_model.parameters():
+            param.requires_grad = True
+
+        target_modules_in_diffusion = get_target_module_names(self.base_model.diffusion_module)
+        final_target_modules = [f"diffusion_module.{name}" for name in target_modules_in_diffusion]
+
+        peft_config = LoraConfig(
+            r=8,                             # Ранг LoRA
+            lora_alpha=16,                   # Alpha для LoRA
+            target_modules=final_target_modules, # Передаем найденные и правильно именованные слои
+            lora_dropout=0.05,
+            bias="none",                     # "none", "all", "lora_only"
+            #task_type=TaskType.CAUSAL_LM     # Или другой тип задачи, если применимо.
+                                     # Если у вас не классическая задача NLP, можно опустить
+                                     # или использовать более общий тип, либо PEFT выберет его сам.
+                                     # Для произвольных моделей часто можно не указывать или использовать
+                                     # значение по умолчанию, если нет специфических требований.
+        )
+        self.raw_model = get_peft_model(self.base_model, peft_config)
+        # Шаг 5: Проверяем обучаемые параметры
+        print("\nОбучаемые параметры после применения LoRA:")
+        self.raw_model.print_trainable_parameters()
+
         self.use_ddp = False
         if DIST_WRAPPER.world_size > 1:
             self.print(f"Using DDP")
