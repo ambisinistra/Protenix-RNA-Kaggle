@@ -225,7 +225,7 @@ class AF3Trainer(object):
         self.lddt_metrics = LDDTMetrics(self.configs)
 
     def init_model(self):
-        self.base_model = Protenix(self.configs).to(self.device)
+        self.raw_model = Protenix(self.configs).to(self.device)
 
         self.use_ddp = False
         if DIST_WRAPPER.world_size > 1:
