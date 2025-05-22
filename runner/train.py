@@ -107,7 +107,7 @@ class AF3Trainer(object):
             self.apply_lora()
 
     def apply_lora(self):
-        for param in self.base_model.parameters():
+        for param in self.model.parameters():
             param.requires_grad = False
 
         target_modules_in_diffusion = get_target_module_names(self.model.diffusion_module)
